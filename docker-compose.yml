@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-salon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-salon}
+      POSTGRES_DB: ${POSTGRES_DB:-salon}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-salon} -d ${POSTGRES_DB:-salon}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && python -m app.bot"
+
+  # Одноразовий backup: docker compose --profile tools run --rm backup
+  backup:
+    image: postgres:16-alpine
+    profiles: ["tools"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-salon}
+    volumes:
+      - ./backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      'pg_dump -h db -U ${POSTGRES_USER:-salon} -d ${POSTGRES_DB:-salon}
+      -Fc -f /backups/salon-$$(date +%Y%m%d-%H%M%S).dump &&
+      echo "Backup saved to /backups"'
+
+volumes:
+  pgdata:
+  redisdata:
