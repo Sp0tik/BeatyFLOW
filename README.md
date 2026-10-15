@@ -1,123 +1,105 @@
-# Nail Salon Booking Bot
+# BEAUTYFLOW — Telegram Booking Bot for Beauty Salons
 
-Telegram booking/mini-CRM для салону краси на **aiogram 3 + PostgreSQL + SQLAlchemy async + Alembic + Redis**. Розрахований на один салон на один інстанс бота.
+BEAUTYFLOW is a Telegram booking bot and lightweight CRM for beauty salons, built with **Python, aiogram 3, PostgreSQL, SQLAlchemy (async), Alembic, and Redis**. The current setup is designed for one salon per bot instance.
 
-## Що є в продукті
+## Features
 
-**Клієнт:** запис майстер → послуга → дата → час → телефон; «Мої записи»; скасування; **перенесення запису**; налаштування рекламних повідомлень (opt-in/opt-out). Службові нагадування про запис не залежать від маркетингового opt-out.
+### Clients
+- Book an appointment by selecting a master, service, date, and available time.
+- View upcoming appointments and cancel or reschedule bookings.
+- Choose whether to receive marketing messages (opt-in / opt-out).
+- Continue receiving essential appointment reminders independently of marketing preferences.
 
-**Майстер:** одноразова авторизація `/master <код>`; перегляд записів; вихідні; **відпустка діапазоном**; скасування; робочий графік; **completed / no-show** для минулих візитів.
+### Masters
+- One-time account linking with the `/master <code>` command.
+- View appointments and manage cancellations.
+- Configure working hours and days off.
+- Schedule vacation periods.
+- Mark past appointments as `completed` or `no-show`.
 
-**Власник:** майстри та їх активація/деактивація; індивідуальні послуги/ціни/тривалість; робочі години; вихідні/відпустки; розсилки; **аналітика**; **картки клієнтів**; статистика успішних/невдалих відправок.
+### Salon owners
+- Manage masters and activate or deactivate their accounts.
+- Configure services, prices, durations, and working hours.
+- Manage days off and vacation periods.
+- Send marketing broadcasts and review delivery statistics.
+- Access analytics and client profiles.
 
-## Production-захист бронювання
+## Booking Integrity and Concurrency Protection
 
-`create_booking()` не довіряє inline-кнопці. Перед INSERT повторно перевіряються:
+The booking flow does not trust an old inline-button selection. Before a booking is inserted, `create_booking()` revalidates:
 
-- активність майстра й послуги;
-- горизонт запису та минулий час;
-- вихідний/відпустка;
-- робочий інтервал;
-- крок сітки слотів;
-- конфлікти з активними записами.
+- Whether the master and service are active.
+- Booking horizon and whether the requested time is in the past.
+- Days off and vacation periods.
+- Working-hour intervals.
+- The slot-grid step.
+- Conflicts with existing active bookings.
 
-Додатково є два рівні захисту від race condition:
+Two database-level safeguards protect against overlapping bookings for the same master:
 
-1. PostgreSQL transaction advisory lock на майстра;
-2. exclusion constraint `ex_bookings_master_time_overlap` у міграції `0006` — БД фізично не дозволить два активні записи одного майстра, часові діапазони яких перетинаються.
+1. A PostgreSQL transaction advisory lock per master.
+2. The `ex_bookings_master_time_overlap` exclusion constraint, introduced in migration `0006`, which prevents overlapping active booking time ranges for the same master.
 
-## Робочий графік і перерви
+## Working Hours and Breaks
 
-Підтримуються кілька інтервалів в одному дні. Формат:
+A day can contain multiple working intervals. For example:
 
 ```text
-Пн-Пт 09:00-13:00;14:00-18:00, Сб 10:00-15:00, Нд вихідний
+Mon-Fri 09:00-13:00;14:00-18:00, Sat 10:00-15:00, Sun off
 ```
 
-Кома розділяє правила для днів, `;` — інтервали одного дня. Таким чином 13:00–14:00 є перервою і не потрапляє у вільні слоти.
+Commas separate day rules; semicolons separate intervals within the same day. In this example, 13:00–14:00 is a break and is not offered as an appointment slot.
 
-## Відпустка
+## Vacation Periods
 
-У меню вихідних є «🏖 Відпустка на період». Формат вводу:
+The days-off menu includes a vacation-period option. Enter a date range in this format:
 
 ```text
 10.10.2026..20.10.2026
 ```
 
-Усі дні створюються як `DayOff`. Активні записи в діапазоні скасовуються, клієнти отримують повідомлення.
+Each date in the range is added as a day off. Active appointments in the affected period are cancelled, and clients are notified.
 
-## Нагадування
+## Appointment Reminders
 
-Scheduler більше не шукає вузьке вікно ±2 хв. Він кожні 5 хвилин забирає всі ще не відправлені записи, які вже потрапили в `REMINDER_HOURS_BEFORE`, але ще не почались. Тому короткий restart/простій не губить нагадування. APScheduler налаштований з `coalesce`, `max_instances=1` і `misfire_grace_time`.
+The scheduler checks every five minutes for unsent reminders that have entered the configured `REMINDER_HOURS_BEFORE` window and whose appointments have not started yet. This helps reminders survive a brief restart or service interruption.
 
-## Redis FSM
+APScheduler is configured with `coalesce`, `max_instances=1`, and `misfire_grace_time`.
 
-FSM зберігається в Redis (`REDIS_URL`), тому кроки запису/перенесення не зникають при звичайному перезапуску контейнера бота.
+## Redis-Backed FSM
 
-## Секрети
+Conversation state is stored in Redis via `REDIS_URL`. This helps preserve booking and rescheduling steps across ordinary bot-container restarts.
 
-**Не додавайте `.env` у Git або ZIP.** Репозиторій містить лише `.env.example`; `.gitignore` та `.dockerignore` блокують `.env`. Якщо токен колись потрапляв у архів/репозиторій — відкличте його через BotFather і використовуйте новий.
+## Security Notes
 
-Коди майстрів генеруються через `secrets.token_urlsafe(16)`, є одноразовими після успішної прив'язки, перевіряється `is_active`, а `/master` має обмеження невдалих спроб.
+- **Never commit your `.env` file or include it in ZIP archives.** The repository should contain only the `.env.example` template; `.gitignore` and `.dockerignore` are configured to exclude `.env`.
+- If a Telegram bot token has ever been exposed in an archive or repository, revoke it through BotFather and use a newly generated token.
+- Master access codes are generated with `secrets.token_urlsafe(16)` and are single-use after successful account linking.
+- The bot checks whether a master account is active and applies a limit to failed `/master` attempts.
 
-## Запуск
+## Getting Started
 
-1. `cp .env.example .env`
-2. Встановіть **новий** `BOT_TOKEN`, `OWNER_TG_ID` і однаковий пароль у `POSTGRES_PASSWORD` та `DATABASE_URL`.
-3. `docker compose up -d --build`
-4. Перевірте логи: `docker compose logs -f bot`
+### Prerequisites
 
-При старті bot-контейнер автоматично запускає `alembic upgrade head`.
+- Docker Engine and Docker Compose
+- A Telegram bot token from [@BotFather](https://t.me/BotFather)
+- Your Telegram user ID for `OWNER_TG_ID`
 
-## Backup / restore PostgreSQL
+### Configure Environment Variables
 
-Ручний backup у `./backups`:
+1. Clone the repository and enter its directory:
 
-```bash
-./scripts/backup.sh
-```
+   ```bash
+   git clone https://github.com/Sp0tik/BeatyFLOW.git
+   cd BeatyFLOW
+   ```
 
-або:
+2. Create your local environment file:
 
-```bash
-docker compose --profile tools run --rm backup
-```
+   ```bash
+   cp .env.example .env
+   ```
 
-Restore:
+   On Windows PowerShell, use `Copy-Item .env.example .env`.
 
-```bash
-./scripts/restore.sh backups/salon-YYYYMMDD-HHMMSS.dump
-```
-
-На VPS додайте щоденний cron, наприклад о 03:20:
-
-```cron
-20 3 * * * cd /opt/nail-salon-bot && ./scripts/backup.sh >> /var/log/nail-bot-backup.log 2>&1
-```
-
-Локальна ротація видаляє `.dump` старші 14 днів. Для production копіюйте backup ще й у зовнішнє S3-сумісне сховище.
-
-## Міграція з попередньої версії
-
-Перед оновленням зробіть backup. Потім:
-
-```bash
-docker compose up -d db redis
-docker compose run --rm bot alembic upgrade head
-docker compose up -d --build bot
-```
-
-Міграція `0006` додає Redis/CRM-пов'язані поля БД, кілька робочих інтервалів на день, historical `price_snapshot` і PostgreSQL exclusion constraint.
-
-> Якщо в старій БД уже існують активні записи одного майстра, що перетинаються в часі, constraint не зможе створитись, доки ці конфлікти не будуть виправлені.
-
-## Тести
-
-Швидкі тести без PostgreSQL:
-
-```bash
-python -m unittest discover -s tests -p 'test_*.py'
-python -m compileall -q app scripts alembic
-```
-
-Перед production deployment окремо проганяйте staging-сценарії на PostgreSQL: два одночасні бронювання одного слоту, вихідний/відпустка після показу старої кнопки, деактивація майстра, restart bot+Redis, старі callback-кнопки, cancel/reschedule, reminders.
+3. Set a **new** `BOT_TOKEN`, your `OWNER_TG_ID`, and a strong database password. Ensure the
